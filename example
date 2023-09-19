@@ -1,0 +1,2175 @@
+Libraries
+
+import pandas as pd
+import csv
+import numpy as np
+import re
+import nltk
+from nltk.corpus import stopwords
+from gensim.corpora import Dictionary
+import string
+import pickle
+from sklearn.decomposition import LatentDirichletAllocation as LDA
+from sklearn.feature_extraction.text import TfidfTransformer
+from scipy.sparse import csr_matrix
+from time import time
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from sklearn.utils import resample
+from nltk.corpus import stopwords
+
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
+from sklearn.decomposition import NMF
+from nltk.stem.wordnet import WordNetLemmatizer
+lmtzr = WordNetLemmatizer()
+from sklearn.preprocessing import normalize
+
+from nltk.corpus import stopwords
+
+nltk.download('stopwords')
+nltk.download('wordnet')
+
+stop_words = stopwords.words('english')
+stop_words.extend([''])
+
+Connect and locate folders
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+All data is set into the Final Data Set folders
+
+%cd /content/drive/MyDrive/vis/input/2023_05_20/Final Data Set
+
+Filter out invalid case
+
+#Load Raw ID & Panel ID
+input_datapath = "Norwegian/RetrieveID.csv"  # to save space, we provide a pre-filtered dataset
+
+id = pd.read_csv(input_datapath )
+
+# load & inspect dataset
+input_datapath = "Norwegian/Invalid_Huy.xlsx - Invalid 1.csv"  # to save space, we provide a pre-filtered dataset
+
+df_invalid = pd.read_csv(input_datapath )
+
+
+df_invalid_id = df_invalid.merge(id,left_on='ID',right_on='Panelist Survey Id', how='left')
+
+# Get Data from Norway
+
+Testing from [raw file](https://vis.bi.no/api/export?aaaaaa)
+
+Files include all survey fillings since 22 Feb, 2023
+
+**N = 893** Unique Panelist Survey Id after filter
+But we have 908 unique survey filling (but 907 Unique participant ID) because we have 15 Panelist fill twices, and 1 participant ID fill twices.
+
+15 Panelists: ['p0QzjpUuQVZTlBxwmC5WNA**', 'p0QzjpUuQVaf7DJXzTGQig**',
+       'p0QzjpUuQVY1Ww7hMsWrKA**', 'p0QzjpUuQVZF_1zJpBbMBA**',
+       'p0QzjpUuQVbeosWGyh0Jrw**', 'p0QzjpUuQVbR9G3YebB4Ug**',
+       'VetRaQwKSrPdpjHpcEOVCw**', 'p0QzjpUuQVamL1Pzl-2RqQ**',
+       'p0QzjpUuQVYgzdyzHMuWNA**', 'VetRaQwKSrPvykw0ym-ieQ**',
+       'p0QzjpUuQVZ_R49iHhRXdw**', 'VetRaQwKSrPVw-i7pT9A4g**',
+       'p0QzjpUuQVbSy-E6AfdSbg**', 'p0QzjpUuQVbqGzZOipwl9A**',
+       'p0QzjpUuQVZj_-OJ_2Q02g**']
+
+1 Survey ID 'b3dea250-4ae4-48fa-81ed-11fb17e1ca0b'
+
+
+input_datapath = "Raw Data/general-image-recognition.csv"  # to save space, we provide a pre-filtered dataset
+
+raw = pd.read_csv(input_datapath,delimiter='\t')
+
+Criteria for filtering out:
+1. Panelist ID is known.
+2. The Respondents finished survey
+3. They gave consent.
+4. Duration of finishing survey is larger than 60 seconds (1 minutes)
+5. There is no Code for prolific (Testing).
+6. The panel ID is not in the invalid list, filtered out by Huy
+
+# Panelist ID is known.
+filtered_df = raw.dropna(subset=['Panelist Survey Id'])
+# The Respondents finished survey.
+filtered_df = filtered_df[~filtered_df['Finished'].isin(['No'])]
+# The Respondents consent.
+filtered_df = filtered_df[~filtered_df['Consent'].isin(['No'])]
+# Duration of finishing survey is larger than 60 seconds (1 minutes)
+filtered_df = filtered_df[(filtered_df['Duration in seconds'] >= 60)]
+#There is no Code for prolific (Testing).
+filtered_df = filtered_df[filtered_df['Code for Prolific'].isna()]
+#The panel ID is not in the invalid list, filtered out by Huy
+filtered_df = filtered_df[~filtered_df['Response Id'].isin(df_invalid_id['Response Id'])]
+
+#filter only reponse during the time of survey running
+
+# Convert the 'timestamp' column to datetime format
+filtered_df ['Response At (GMT+1)'] = pd.to_datetime(filtered_df ['Response At (GMT+1)'])
+
+# Filter rows based on a time range
+start_time = '2023-04-27 00:00:00'
+filtered_df = filtered_df[(filtered_df['Response At (GMT+1)'] >= start_time)]
+#end_time = '2022-01-01 16:30:00'
+#filtered_df = df[(df['timestamp'] >= start_time) & (df['timestamp'] <= end_time)]
+
+filtered_df
+
+Detecting Repeated survey fillings
+
+x_counts = collage_df['Response Id'].value_counts()
+repeated_X_values = x_counts[x_counts > 2].index
+print(repeated_X_values)
+
+y_counts = collage_df['Panelist Survey Id'].value_counts()
+
+# Identify the values in Y that are repeated
+repeated_Y_values = y_counts[y_counts > 2].index
+
+print(repeated_Y_values)
+
+
+
+There is 5 case of missing Collage URL. Fixed here
+
+
+
+errorcollage = filtered_df[filtered_df['Collage URL'].isna()]['Response Id'].unique().tolist()
+
+errorcollage
+#{'8a3c3394-24d6-43f8-8a97-fb9d126273cb',
+ #'932bf7ef-034d-49c5-ab68-f3775c8e9ae2'}
+
+mask1 = (filtered_df['Response Id'] == 'd3a85bc2-48db-4313-b027-9fcd5cc840df')
+mask_nan = pd.isna(filtered_df['Collage URL'])
+
+filtered_df['Collage URL'] = np.where(mask1 & mask_nan & (filtered_df['Random Condition'] == 'general'),
+                                     'https://vis.bi.no/tuanfix1g',
+                                     np.where(mask1 & mask_nan & (filtered_df['Random Condition'] != 'general'),
+                                              'https://vis.bi.no/tuanfix1',
+                                              filtered_df['Collage URL']))
+
+mask2 = (filtered_df['Response Id'] == '1e76dd3d-9533-4ec3-bab3-2a66a0e5a688')
+mask_nan = pd.isna(filtered_df['Collage URL'])
+filtered_df['Collage URL'] = np.where(mask2 & mask_nan & (filtered_df['Random Condition'] == 'general'),
+                                     'https://vis.bi.no/tuanfix2g',
+                                     np.where(mask2 & mask_nan & (filtered_df['Random Condition'] != 'general'),
+                                              'https://vis.bi.no/tuanfix2',
+                                              filtered_df['Collage URL']))
+
+#mask3 = (filtered_df['Response Id'] == '8a3c3394-24d6-43f8-8a97-fb9d126273cb')
+
+mask4 = (filtered_df['Response Id'] == 'c4195bfc-12e3-4a72-bdae-1ae859ea7021')
+mask_nan = pd.isna(filtered_df['Collage URL'])
+filtered_df['Collage URL'] = np.where(mask4 & mask_nan & (filtered_df['Random Condition'] == 'general'),
+                                     'https://vis.bi.no/tuanfix4g',
+                                     np.where(mask4 & mask_nan & (filtered_df['Random Condition'] != 'general'),
+                                              'https://vis.bi.no/tuanfix4',
+                                              filtered_df['Collage URL']))
+
+mask5 = (filtered_df['Response Id'] == '932bf7ef-034d-49c5-ab68-f3775c8e9ae2')
+mask_nan = pd.isna(filtered_df['Collage URL'])
+filtered_df['Collage URL'] = np.where(mask5 & mask_nan & (filtered_df['Random Condition'] == 'general'),
+                                     'https://vis.bi.no/tuanfix5g',
+                                     np.where(mask5 & mask_nan & (filtered_df['Random Condition'] != 'general'),
+                                              'https://vis.bi.no/tuanfix5',
+                                              filtered_df['Collage URL']))
+
+#Use to detect how the new URL was replaced
+filtered_df[filtered_df['Response Id'] == '8a3c3394-24d6-43f8-8a97-fb9d126273cb']['Collage URL'].unique().tolist()
+
+filtered_df.loc[filtered_df['Response Id'].isin(errorcollage), 'Collage URL'].unique().tolist()
+
+Divide raw data into data of general collages and seasons
+
+Collapse accroding to Image URL
+
+image_df = filtered_df.groupby(['Panelist Survey Id','Photo URL']).agg({
+    'Tags': lambda Tags: ' '.join(Tags.astype(str)),
+    'Random Condition': 'first',
+    'Collage URL': 'first',
+    'Time Spent Collage': 'first',
+    'Description': 'first',
+    'Keyword': 'first',
+    'Gender': 'first',
+    'Ages': 'first',
+    'City': 'first',
+    'Region': 'first',
+    'Marital Status': 'first',
+    'Job Status': 'first',
+    'Education Level': 'first',
+    'Annual Income': 'first',
+    'Response Id': 'first',
+    'Response At (GMT+1)': 'first'
+}).reset_index()
+
+Collapse accroding to each collages
+
+collage_df = filtered_df.groupby(['Panelist Survey Id','Collage URL']).agg({
+    'Tags': lambda Tags: ' '.join(Tags.astype(str)),
+    'Random Condition': 'first',
+    'Time Spent Collage': 'first',
+    'Description': 'first',
+    'Keyword': 'first',
+    'Gender': 'first',
+    'Ages': 'first',
+    'City': 'first',
+    'Region': 'first',
+    'Marital Status': 'first',
+    'Job Status': 'first',
+    'Education Level': 'first',
+    'Annual Income': 'first',
+    'Response Id': 'first',
+    'Response At (GMT+1)': 'first'
+}).reset_index()
+
+collage_df.to_csv('0909collage_huy.csv', index=False)
+
+#TRANSLATE
+NORWEGIAN DESCIRPTION AND KEYWORDS INTO ENGLISH
+
+pip install openai
+
+import openai
+import pandas as pd
+
+# Initialize the OpenAI API client
+openai.api_key = 'aaaaaaa'
+
+import openai
+
+def translate_to_english(text):
+    prompt = f"Translate the following text to English: {text}"
+    response = openai.Completion.create(
+        engine="text-davinci-002",
+        prompt=prompt,
+        max_tokens=60
+    )
+    translated_text = response.choices[0].text.strip()
+    # Remove newline characters and extra spaces
+    cleaned_text = " ".join(translated_text.split())
+    # Remove leading period if it exists
+    if cleaned_text.startswith('. '):
+        cleaned_text = cleaned_text[2:]
+    elif cleaned_text.startswith('.'):
+        cleaned_text = cleaned_text[1:]
+    return cleaned_text
+
+collage_df['Description']
+
+Testing description and keywords translation with OpenAI
+
+collage_df.loc[:, 'Description_Eng']= collage_df['Description'].apply(translate_to_english)
+
+Write into excel file
+
+pip install openpyxl
+
+collage_df.to_csv('Full_Collage_translate0909.xlsx', index=False)
+
+Split data into different conditions.
+
+import pandas as pd
+
+# Load the Excel file
+collage_df = pd.read_excel('Full_Collage_translate0909.xlsx', engine='openpyxl')
+
+##BY IMAGES TAGS
+image_df_gen = image_df[image_df['Random Condition'] == 'general']
+image_df_spr = image_df[image_df['Random Condition'] == 'spring']
+image_df_sum = image_df[image_df['Random Condition'] == 'summer']
+image_df_fall = image_df[image_df['Random Condition'] == 'fall']
+image_df_win = image_df[image_df['Random Condition'] == 'winter']
+
+##BY COLLAGE TAGS
+collage_df_gen = collage_df[collage_df['Random Condition'] == 'general']
+collage_df_spr = collage_df[collage_df['Random Condition'] == 'spring']
+collage_df_sum = collage_df[collage_df['Random Condition'] == 'summer']
+collage_df_fall = collage_df[collage_df['Random Condition'] == 'fall']
+collage_df_win = collage_df[collage_df['Random Condition'] == 'winter']
+
+#Number of collages general is equal to number of all seasons
+
+len(collage_df_spr)+len(collage_df_sum)+len(collage_df_fall)+len(collage_df_win)-len(collage_df_gen)
+
+#Can use the unique detection to check whether number of collages are
+#unique_id_collage = collage_df['Collage URL'].unique().tolist()
+#unique_id_collage_spr=collage_df_spr['Response Id'].unique().tolist()
+#unique_id_collage_sum=collage_df_sum['Response Id'].unique().tolist()
+#unique_id_collage_fall=collage_df_fall['Response Id'].unique().tolist()
+#unique_id_collage_win=collage_df_win['Response Id'].unique().tolist()
+#combined_list = list(set(unique_id_collage_spr + unique_id_collage_sum + unique_id_collage_fall + unique_id_collage_win))
+#unique_values = set()
+#combined_list_ordered = []
+
+#for item in unique_id_collage_spr + unique_id_collage_sum + unique_id_collage_fall + unique_id_collage_win:
+    #if item not in unique_values:
+       ## unique_values.add(item)
+
+#len(combined_list)
+#set(combined_list)-set(unique_id_collage_gen)
+
+image_df_gen
+
+collage_df_gen
+
+collage_df['Collage URL'][1]
+
+collage_df_gen['qualifying'] = [None] * len(collage_df_gen)
+
+collage_df_gen['Image Comment'] = [None] * len(collage_df_gen)
+
+import ipywidgets as widgets
+from IPython.display import display
+from ipywidgets import VBox, HBox
+import pandas as pd
+import requests
+
+# Initialize variables
+visited_indices = []
+try:
+    current_index = collage_df_gen[collage_df_gen['qualifying'].isna()].index[0]
+except IndexError:
+    current_index = 0  # Default to 0 if all images are qualified or disqualified
+
+# Add the first index to the visited list
+visited_indices.append(current_index)
+
+comment_input = widgets.Text(
+    value='',
+    placeholder='Enter comment',
+    description='Comment:',
+    disabled=False
+)
+
+main_image = widgets.Image(
+    format='png',
+    width=600,
+    height=800,
+)
+
+time_label = widgets.Label()
+condition_label = widgets.Label()
+
+button_qualify = widgets.Button(description="Qualify", button_style='success')  # Green
+button_disqualify = widgets.Button(description="Disqualify", button_style='danger')  # Red
+
+button_first = widgets.Button(description="First")
+button_prev = widgets.Button(description="Previous")
+button_next = widgets.Button(description="Next")
+button_last = widgets.Button(description="Last")
+
+index_label = widgets.Label()
+
+# Update function
+def next_image():
+    global current_index
+    try:
+        current_index = collage_df_gen[collage_df_gen['qualifying'].isna()].index[0]
+    except IndexError:
+        current_index = 0
+    visited_indices.append(current_index)
+    update()
+
+def previous_image():
+    global current_index
+    if len(visited_indices) > 1:
+        visited_indices.pop()  # Remove the current index
+        current_index = visited_indices[-1]  # Set to the last visited index
+        update()
+    else:
+        print("No previous image to go back to.")
+
+def update():
+    global current_index
+    if 0 <= current_index < len(collage_df_gen):
+        image_url = collage_df_gen.loc[current_index, 'Collage URL']
+        main_image.value = requests.get(image_url).content
+        time_label.value = f"Time Spent Collage: {collage_df_gen.loc[current_index, 'Time Spent Collage']}"
+        condition_label.value = f"Random Condition: {collage_df_gen.loc[current_index, 'Random Condition']}"
+        index_label.value = f"Image Index: {current_index + 1} / {len(collage_df_gen)}"
+        comment_input.value = collage_df_gen.loc[current_index, 'Image Comment'] or ''
+
+# Button click handlers
+def on_button_qualify_clicked(b):
+    global current_index
+    collage_df.loc[current_index, 'qualifying'] = 'Qualified'
+    collage_df_gen.loc[current_index, 'Image Comment'] = comment_input.value  # Store the comment
+    update()
+    on_button_next_clicked(None)  # Auto transition to the next image
+
+def on_button_disqualify_clicked(b):
+    global current_index
+    collage_df_gen.loc[current_index, 'qualifying'] = 'Disqualified'
+    collage_df_gen.loc[current_index, 'Image Comment'] = comment_input.value  # Store the comment
+    update()
+    on_button_next_clicked(None)  # Auto transition to the next image
+
+def on_button_first_clicked(b):
+    global current_index
+    current_index = 0
+    update()
+
+def on_button_prev_clicked(b):
+    global current_index
+    current_index = max(0, current_index - 1)
+    update()
+
+def on_button_next_clicked(b):
+    global current_index
+    current_index = min(len(collage_df_gen) - 1, current_index + 1)
+    update()
+
+def on_button_last_clicked(b):
+    global current_index
+    current_index = len(collage_df_gen) - 1
+    update()
+
+# Attach handlers
+button_qualify.on_click(on_button_qualify_clicked)
+button_disqualify.on_click(on_button_disqualify_clicked)
+button_first.on_click(on_button_first_clicked)
+button_prev.on_click(lambda b: previous_image())  # Use previous_image function here
+button_next.on_click(lambda b: next_image())  # Use next_image function here
+button_last.on_click(on_button_last_clicked)
+
+# Display widgets
+nav_buttons = HBox([button_first, button_prev, button_next, button_last])
+qual_buttons = HBox([button_qualify, button_disqualify])
+
+metadata = VBox([time_label, condition_label, index_label, comment_input])  # Include the comment input
+
+display(VBox([nav_buttons, main_image, qual_buttons, metadata]))
+
+
+# Initial update
+update()
+
+
+
+print(collage_df_gen['qualifying'].isna().sum())
+
+collage_df_gen
+
+collage_df_gen.to_csv('General_Collage_Qualifying0909.xlsx', index=False)
+
+#GET DATA FROM UK
+Testing from [raw file](https://www.dropbox.com/scl/fi/969w0yof7pdinnuxbq638/Finalized-dataset-general.xlsx?rlkey=bz9wbz4nxxquvil9ko635bsfg&dl=0)
+
+Files include all survey fillings since 28.12.2022  15:43:00 & before 29.12
+
+N = 49 after filter
+
+input_datapath_uk = "UK/UK_general_model.csv"  # to save space, we provide a pre-filtered dataset
+
+# Read file
+raw_uk = pd.read_csv(input_datapath_uk, delimiter=',')
+
+raw_uk['Description']
+
+Criteria for filtering out:
+
+1. Prolific PID is known.
+2. The Respondents finished survey
+3. They gave consent.
+4. Duration of finishing survey is larger than 60 seconds (1 minutes)
+5. All survey fillings since 28.12.2022 15:43:00 & before 29.12
+
+# Prolific PID is known.
+filtered_df_uk = raw_uk.dropna(subset=['Prolific PID'])
+# The Respondents finished survey.
+filtered_df_uk = filtered_df_uk[~filtered_df_uk['Finished'].isin(['No'])]
+# The Respondents consent.
+filtered_df_uk = filtered_df_uk[~filtered_df_uk['Consent'].isin(['No'])]
+# Duration of finishing survey is larger than 60 seconds (1 minutes)
+filtered_df_uk = filtered_df_uk[(filtered_df_uk['Duration in seconds'] >= 60)]
+
+#filter only reponse during the time of survey running
+# Convert the 'timestamp' column to datetime format
+filtered_df_uk['Response At (GMT+1)'] = pd.to_datetime(filtered_df_uk['Response At (GMT+1)'])
+# Filter rows based on a time range
+start_time = '2022-12-28 15:43:00'
+end_time = '2022-12-29 00:00:00'
+filtered_df_uk = filtered_df_uk[(filtered_df_uk['Response At (GMT+1)'] >= start_time) & (filtered_df_uk['Response At (GMT+1)'] <= end_time)]
+
+filtered_df_uk
+
+errorcollage_uk = filtered_df_uk[filtered_df_uk['Collage URL'].isna()]['Response Id'].unique().tolist()
+
+errorcollage_uk
+
+Divide raw data into data of general collages and seasons
+
+Collapse accroding to Image URL
+
+image_df_uk = filtered_df_uk.groupby(['Prolific PID','Photo URL']).agg({
+    'Tags': lambda Tags: ' '.join(Tags.astype(str)),
+    'Random Condition': 'first',
+    'Collage URL': 'first',
+    'Time Spent Collage': 'first',
+    'Description': 'first',
+    'Keyword': 'first',
+    'Gender': 'first',
+    'Ages': 'first',
+    'City': 'first',
+    'Region': 'first',
+    'Marital Status': 'first',
+    'Job Status': 'first',
+    'Education Level': 'first',
+    'Annual Income': 'first',
+    'Response Id': 'first',
+    'Response At (GMT+1)': 'first'
+}).reset_index()
+
+Collapse accroding to each collages
+
+collage_df_uk = filtered_df_uk.groupby(['Prolific PID','Collage URL']).agg({
+    'Tags': lambda Tags: ' '.join(Tags.astype(str)),
+    'Random Condition': 'first',
+    'Time Spent Collage': 'first',
+    'Description': 'first',
+    'Keyword': 'first',
+    'Gender': 'first',
+    'Ages': 'first',
+    'City': 'first',
+    'Region': 'first',
+    'Marital Status': 'first',
+    'Job Status': 'first',
+    'Education Level': 'first',
+    'Annual Income': 'first',
+    'Response Id': 'first',
+    'Response At (GMT+1)': 'first'
+}).reset_index()
+
+##BY IMAGES TAGS _ UK
+image_df_uk_gen = image_df_uk[image_df_uk['Random Condition'] == 'general']
+image_df_uk_spr = image_df_uk[image_df_uk['Random Condition'] == 'spring']
+image_df_uk_sum = image_df_uk[image_df_uk['Random Condition'] == 'summer']
+image_df_uk_fall = image_df_uk[image_df_uk['Random Condition'] == 'fall']
+image_df_uk_win = image_df_uk[image_df_uk['Random Condition'] == 'winter']
+
+##BY COLLAGE TAGS _UK
+collage_df_uk_gen = collage_df_uk[collage_df_uk['Random Condition'] == 'general']
+collage_df_uk_spr = collage_df_uk[collage_df_uk['Random Condition'] == 'spring']
+collage_df_uk_sum = collage_df_uk[collage_df_uk['Random Condition'] == 'summer']
+collage_df_uk_fall = collage_df_uk[collage_df_uk['Random Condition'] == 'fall']
+collage_df_uk_win = collage_df_uk[collage_df_uk['Random Condition'] == 'winter']
+
+# ANALYSES
+
+# Process Stopwords List
+
+
+# Example corpus with potential non-string elements
+corpus1 = image_df_gen['Tags'].dropna().astype(str)
+
+pip install pyLDAvis
+
+pip install "pandas<2.0.0"
+
+pip install rake-nltk
+
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.stem import PorterStemmer
+from nltk.corpus import stopwords
+from nltk.probability import FreqDist
+from rake_nltk import Rake
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+# Define custom stopwords list
+custom_stopwords = set(stopwords.words('english'))
+
+freq_dist = FreqDist()
+for keyword in corpus1:
+    words = keyword.split()
+    freq_dist.update(words)
+
+freq_dist_df = pd.DataFrame(freq_dist.items(), columns=['Term', 'Frequency'])
+
+# Sort the DataFrame by frequency
+sorted_freq_dist_df = freq_dist_df.sort_values(by='Frequency', ascending=False)
+
+stoptf = set(freq_dist_df[(freq_dist_df['Frequency'] < 10) | (freq_dist_df['Frequency'] > 3000)]['Term'])
+
+stop_words = list(stoptf)
+
+Decision to go with Frequency only, ignore the rest of stopwords methods
+
+import numpy as np
+import json
+import glob
+
+#Gensim
+import gensim
+import gensim.corpora as corpora
+from gensim.utils import simple_preprocess
+from gensim.models import CoherenceModel
+
+#spacy
+import spacy
+from nltk.corpus import stopwords
+
+#vis
+import pyLDAvis
+import pyLDAvis.gensim
+
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+import spacy
+
+def lemmatization(texts, allowed_postags=["NOUN", "ADJ", "VERB", "ADV"], custom_stopwords=None):
+    nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+    if custom_stopwords:
+        stopwords = spacy.lang.en.stop_words.STOP_WORDS.union(stop_words)
+    else:
+        stopwords = spacy.lang.en.stop_words.STOP_WORDS
+
+    texts_out = []
+
+    for text in texts:
+        doc = nlp(text)
+        new_text = []
+
+        for token in doc:
+            if token.pos_ in allowed_postags and token.lemma_ not in stopwords:
+                new_text.append(token.lemma_)
+
+        final = " ".join(new_text)
+        texts_out.append(final)
+
+    return texts_out
+
+# IMAGES: input data into image_df_gen['Tags'] - NORGE
+    ## COLLAGES: input data into collage_df_gen['Tags'] - NORGE
+# IMAGES: input data into image_df_uk_gen['Tags'] - UK
+    ## COLLAGES: input data into collage_df_uk_gen['Tags'] - UK
+
+lemmatized_texts = lemmatization(corpus1,custom_stopwords=stop_words)
+
+len([word for text in lemmatized_texts for word in text])
+
+782K tags left after filtered out stopwords which have frequency of 3,000 or under 10.
+
+def gen_words(texts):
+    final = []
+    for text in texts:
+        new = gensim.utils.simple_preprocess(text, deacc=True)
+        final.append(new)
+    return (final)
+
+data_words = gen_words(lemmatized_texts)
+
+print (data_words[0][0:20])
+
+id2word = corpora.Dictionary(data_words)
+
+corpus = []
+for text in data_words:
+    new = id2word.doc2bow(text)
+    corpus.append(new)
+
+print (corpus[0][0:20])
+
+word = id2word[[0][:1][0]]
+print (word)
+
+coherence_image_gen = []
+for k in range(3,8):
+    print('Round: '+str(k))
+    Lda = gensim.models.ldamodel.LdaModel
+    ldamodel = Lda(corpus, num_topics=k, id2word = id2word, passes=40,\
+                   iterations=200, chunksize = 1000, eval_every = None,random_state=0)
+
+    cm = gensim.models.coherencemodel.CoherenceModel(model=ldamodel, texts=data_words,\
+                                                     dictionary=id2word, coherence='c_v')
+    coherence_image_gen.append((k,cm.get_coherence()))
+
+x_val = [x[0] for x in coherence_image_gen]
+y_val = [x[1] for x in coherence_image_gen]
+plt.plot(x_val,y_val)
+plt.scatter(x_val,y_val)
+plt.title('Number of Topics vs. Coherence')
+plt.xlabel('Number of Topics')
+plt.ylabel('Coherence')
+plt.xticks(x_val)
+plt.show()
+
+Pick number of Topics that gains best coherence.
+num_topics = 4
+
+#lda_model = gensim.models.ldamodel.LdaModel(corpus=corpus,
+                                           id2word=id2word,
+                                           num_topics=6,
+                                           random_state=100,
+                                           update_every=1,
+                                           chunksize=10000,
+                                           passes=10,
+                                           alpha="auto")
+
+
+Lda = gensim.models.ldamodel.LdaModel
+ldamodel = Lda(corpus, num_topics=4, id2word = id2word, passes=40,\
+               iterations=200,  chunksize = 1000, eval_every = None, random_state=0)
+
+ldamodel.show_topics(4, num_words=5, formatted=False)
+
+topic_data =  pyLDAvis.gensim.prepare(ldamodel, corpus, id2word, mds = 'pcoa')
+pyLDAvis.display(topic_data)
+
+num_terms = 15
+topics_data = []
+
+for topic_id in range(ldamodel.num_topics):
+    terms = ldamodel.show_topic(topic_id, topn=num_terms)
+    topic_terms = [f"{term[0]} ({term[1]:.4f})" for term in terms]  # Format: "term (probability)"
+    topics_data.append(topic_terms)
+# Convert to DataFrame with column names "Term 1", "Term 2", ..., "Term 10"
+columns = [f"Term {i+1}" for i in range(num_terms)]
+df = pd.DataFrame(topics_data, columns=columns, index=[f"Topic {i}" for i in range(ldamodel.num_topics)])
+
+# Write the DataFrame to an Excel file
+df.to_excel("topics_terms_probabilities.xlsx", index=False)
+
+
+df
+
+tfidf_vectorizer = TfidfVectorizer(stop_words=stoptf)
+
+from time import time
+
+import matplotlib.pyplot as plt
+
+from sklearn.datasets import fetch_20newsgroups
+from sklearn.decomposition import NMF, LatentDirichletAllocation, MiniBatchNMF
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+
+n_samples = 2000
+n_features = 1000
+n_components = 4
+n_top_words = 20
+batch_size = 128
+init = "nndsvda"
+
+def plot_top_words(model, feature_names, n_top_words, title):
+    fig, axes = plt.subplots(2, 5, figsize=(30, 15), sharex=True)
+    axes = axes.flatten()
+    for topic_idx, topic in enumerate(model.components_):
+        top_features_ind = topic.argsort()[: -n_top_words - 1 : -1]
+        top_features = [feature_names[i] for i in top_features_ind]
+        weights = topic[top_features_ind]
+
+        ax = axes[topic_idx]
+        ax.barh(top_features, weights, height=0.7)
+        ax.set_title(f"Topic {topic_idx +1}", fontdict={"fontsize": 30})
+        ax.invert_yaxis()
+        ax.tick_params(axis="both", which="major", labelsize=20)
+        for i in "top right left".split():
+            ax.spines[i].set_visible(False)
+        fig.suptitle(title, fontsize=40)
+
+    plt.subplots_adjust(top=0.90, bottom=0.05, wspace=0.90, hspace=0.3)
+    plt.show()
+
+
+# Load the 20 newsgroups dataset and vectorize it. We use a few heuristics
+# to filter out useless terms early on: the posts are stripped of headers,
+# footers and quoted replies, and common English words, words occurring in
+# only one document or in at least 95% of the documents are removed.
+
+print("Loading dataset...")
+t0 = time()
+data, _ = fetch_20newsgroups(
+    shuffle=True,
+    random_state=1,
+    remove=("headers", "footers", "quotes"),
+    return_X_y=True,
+)
+data_samples = data[:n_samples]
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf-idf features for NMF.
+print("Extracting tf-idf features for NMF...")
+tfidf_vectorizer = TfidfVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tfidf = tfidf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf (raw term count) features for LDA.
+print("Extracting tf features for LDA...")
+tf_vectorizer = CountVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tf = tf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+print()
+
+# Fit the NMF model
+print(
+    "Fitting the NMF model (Frobenius norm) with tf-idf features, "
+    "n_samples=%d and n_features=%d..." % (n_samples, n_features)
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=1,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf, tfidf_feature_names, n_top_words, "Topics in NMF model (Frobenius norm)"
+)
+
+# Fit the NMF model
+print(
+    "\n" * 2,
+    "Fitting the NMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="kullback-leibler",
+    solver="mu",
+    max_iter=1000,
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in NMF model (generalized Kullback-Leibler divergence)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (Frobenius norm) with tf-idf "
+    "features, n_samples=%d and n_features=%d, batch_size=%d..."
+    % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (Frobenius norm)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d, "
+    "batch_size=%d..." % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="kullback-leibler",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (generalized Kullback-Leibler divergence)",
+)
+
+print(
+    "\n" * 2,
+    "Fitting LDA models with tf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+lda = LatentDirichletAllocation(
+    n_components=n_components,
+    max_iter=5,
+    learning_method="online",
+    learning_offset=50.0,
+    random_state=0,
+)
+t0 = time()
+lda.fit(tf)
+print("done in %0.3fs." % (time() - t0))
+
+tf_feature_names = tf_vectorizer.get_feature_names_out()
+plot_top_words(lda, tf_feature_names, n_top_words, "Topics in LDA model")
+
+UK data
+
+len(lemmatized_texts)
+
+#run with UK data with stopwords
+
+corpus1 = image_df_uk_gen['Tags'].dropna().astype(str)
+
+freq_dist = FreqDist()
+for keyword in corpus1:
+    words = keyword.split()
+    freq_dist.update(words)
+
+
+freq_dist_df = pd.DataFrame(freq_dist.items(), columns=['Term', 'Frequency'])
+
+# Sort the DataFrame by frequency
+sorted_freq_dist_df = freq_dist_df.sort_values(by='Frequency', ascending=False)
+
+sorted_freq_dist_df
+
+stoptf = set(freq_dist_df[(freq_dist_df['Frequency'] < 10) | (freq_dist_df['Frequency'] > 200)]['Term'])
+
+stop_words = list(stoptf)
+
+lemmatized_texts = lemmatization(corpus1,custom_stopwords=stop_words)
+
+data_words = gen_words(lemmatized_texts)
+id2word = corpora.Dictionary(data_words)
+corpus = []
+for text in data_words:
+    new = id2word.doc2bow(text)
+    corpus.append(new)
+
+len([word for text in lemmatized_texts for word in text])
+
+coherence_image_gen_uk = []
+for k in range(3,8):
+    print('Round: '+str(k))
+    Lda = gensim.models.ldamodel.LdaModel
+    ldamodel = Lda(corpus, num_topics=k, id2word = id2word, passes=40,\
+                   iterations=200, chunksize = 1000, eval_every = None,random_state=0)
+
+    cm = gensim.models.coherencemodel.CoherenceModel(model=ldamodel, texts=data_words,\
+                                                     dictionary=id2word, coherence='c_v')
+    coherence_image_gen_uk.append((k,cm.get_coherence()))
+
+x_val1 = [x[0] for x in coherence_image_gen_uk]
+y_val1 = [x[1] for x in coherence_image_gen_uk]
+
+plt.plot(x_val1,y_val1)
+plt.scatter(x_val1,y_val1)
+plt.title('Number of Topics vs. Coherence')
+plt.xlabel('Number of Topics')
+plt.ylabel('Coherence')
+plt.xticks(x_val1)
+plt.show()
+
+#run with UK data - DECIDE 4 Topics
+
+Lda = gensim.models.ldamodel.LdaModel
+ldamodel = Lda(corpus, num_topics=4, id2word = id2word, passes=40,\
+               iterations=200,  chunksize = 1000, eval_every = None, random_state=0)
+
+topic_data =  pyLDAvis.gensim.prepare(ldamodel, corpus, id2word, mds = 'pcoa')
+pyLDAvis.display(topic_data)
+
+
+num_terms = 15
+topics_data = []
+
+for topic_id in range(ldamodel.num_topics):
+    terms = ldamodel.show_topic(topic_id, topn=num_terms)
+    topic_terms = [f"{term[0]} ({term[1]:.4f})" for term in terms]  # Format: "term (probability)"
+    topics_data.append(topic_terms)
+# Convert to DataFrame with column names "Term 1", "Term 2", ..., "Term 10"
+columns = [f"Term {i+1}" for i in range(num_terms)]
+df = pd.DataFrame(topics_data, columns=columns, index=[f"Topic {i}" for i in range(ldamodel.num_topics)])
+
+# Write the DataFrame to an Excel file
+df.to_excel("topics_terms_probabilities_uk.xlsx", index=False)
+
+df
+
+len([word for text in lemmatized_texts for word in text])
+
+from time import time
+
+import matplotlib.pyplot as plt
+
+from sklearn.datasets import fetch_20newsgroups
+from sklearn.decomposition import NMF, LatentDirichletAllocation, MiniBatchNMF
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+
+n_samples = 2000
+n_features = 1000
+n_components = 4
+n_top_words = 20
+batch_size = 128
+init = "nndsvda"
+
+
+def plot_top_words(model, feature_names, n_top_words, title):
+    fig, axes = plt.subplots(2, 5, figsize=(30, 15), sharex=True)
+    axes = axes.flatten()
+    for topic_idx, topic in enumerate(model.components_):
+        top_features_ind = topic.argsort()[: -n_top_words - 1 : -1]
+        top_features = [feature_names[i] for i in top_features_ind]
+        weights = topic[top_features_ind]
+
+        ax = axes[topic_idx]
+        ax.barh(top_features, weights, height=0.7)
+        ax.set_title(f"Topic {topic_idx +1}", fontdict={"fontsize": 30})
+        ax.invert_yaxis()
+        ax.tick_params(axis="both", which="major", labelsize=20)
+        for i in "top right left".split():
+            ax.spines[i].set_visible(False)
+        fig.suptitle(title, fontsize=40)
+
+    plt.subplots_adjust(top=0.90, bottom=0.05, wspace=0.90, hspace=0.3)
+    plt.show()
+
+
+# Load the 20 newsgroups dataset and vectorize it. We use a few heuristics
+# to filter out useless terms early on: the posts are stripped of headers,
+# footers and quoted replies, and common English words, words occurring in
+# only one document or in at least 95% of the documents are removed.
+
+print("Loading dataset...")
+t0 = time()
+data, _ = fetch_20newsgroups(
+    shuffle=True,
+    random_state=1,
+    remove=("headers", "footers", "quotes"),
+    return_X_y=True,
+)
+data_samples = data[:n_samples]
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf-idf features for NMF.
+print("Extracting tf-idf features for NMF...")
+tfidf_vectorizer = TfidfVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tfidf = tfidf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf (raw term count) features for LDA.
+print("Extracting tf features for LDA...")
+tf_vectorizer = CountVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tf = tf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+print()
+
+# Fit the NMF model
+print(
+    "Fitting the NMF model (Frobenius norm) with tf-idf features, "
+    "n_samples=%d and n_features=%d..." % (n_samples, n_features)
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=1,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf, tfidf_feature_names, n_top_words, "Topics in NMF model (Frobenius norm)"
+)
+
+# Fit the NMF model
+print(
+    "\n" * 2,
+    "Fitting the NMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="kullback-leibler",
+    solver="mu",
+    max_iter=1000,
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in NMF model (generalized Kullback-Leibler divergence)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (Frobenius norm) with tf-idf "
+    "features, n_samples=%d and n_features=%d, batch_size=%d..."
+    % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (Frobenius norm)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d, "
+    "batch_size=%d..." % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="kullback-leibler",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (generalized Kullback-Leibler divergence)",
+)
+
+print(
+    "\n" * 2,
+    "Fitting LDA models with tf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+lda = LatentDirichletAllocation(
+    n_components=n_components,
+    max_iter=5,
+    learning_method="online",
+    learning_offset=50.0,
+    random_state=0,
+)
+t0 = time()
+lda.fit(tf)
+print("done in %0.3fs." % (time() - t0))
+
+tf_feature_names = tf_vectorizer.get_feature_names_out()
+plot_top_words(lda, tf_feature_names, n_top_words, "Topics in LDA model")
+
+Run with Collage Data - Norway
+
+#run with Norway data
+corpus1 = collage_df_gen['Tags'].dropna().astype(str)
+
+freq_dist = FreqDist()
+for keyword in corpus1:
+    words = keyword.split()
+    freq_dist.update(words)
+
+
+freq_dist_df = pd.DataFrame(freq_dist.items(), columns=['Term', 'Frequency'])
+
+# Sort the DataFrame by frequency
+sorted_freq_dist_df = freq_dist_df.sort_values(by='Frequency', ascending=False)
+
+
+stoptf = set(freq_dist_df[(freq_dist_df['Frequency'] < 10) | (freq_dist_df['Frequency'] > 3000)]['Term'])
+
+stop_words = list(stoptf)
+
+lemmatized_texts = lemmatization(corpus1,custom_stopwords=stop_words)
+data_words = gen_words(lemmatized_texts)
+id2word = corpora.Dictionary(data_words)
+corpus = []
+for text in data_words:
+    new = id2word.doc2bow(text)
+    corpus.append(new)
+
+coherence_collage_gen1 = []
+for k in range(5,10):
+    print('Round: '+str(k))
+    Lda = gensim.models.ldamodel.LdaModel
+    ldamodel = Lda(corpus, num_topics=k, id2word = id2word, passes=40,\
+                   iterations=200, chunksize = 1000, eval_every = None)
+
+    cm = gensim.models.coherencemodel.CoherenceModel(model=ldamodel, texts=data_words,\
+                                                     dictionary=id2word, coherence='c_v')
+    coherence_collage_gen1.append((k,cm.get_coherence()))
+
+x_val = [x[0] for x in coherence_collage_gen1]
+y_val = [x[1] for x in coherence_collage_gen1]
+plt.plot(x_val,y_val)
+plt.scatter(x_val,y_val)
+plt.title('Number of Topics vs. Coherence')
+plt.xlabel('Number of Topics')
+plt.ylabel('Coherence')
+plt.xticks(x_val)
+plt.show()
+
+#run with Norway data - DECIDE 12 Topics Collage
+
+Lda = gensim.models.ldamodel.LdaModel
+ldamodel = Lda(corpus, num_topics=6, id2word = id2word, passes=40,\
+               iterations=200,  chunksize = 1000, eval_every = None, random_state=0)
+
+topic_data =  pyLDAvis.gensim.prepare(ldamodel, corpus, id2word, mds = 'pcoa')
+pyLDAvis.display(topic_data)
+
+
+## ANH HUY
+
+df
+
+TEST WITH GLOVE
+
+#run with Norway data
+corpus1 = collage_df_gen['Tags'].dropna().astype(str)
+
+freq_dist = FreqDist()
+for keyword in corpus1:
+    words = keyword.split()
+    freq_dist.update(words)
+
+
+freq_dist_df = pd.DataFrame(freq_dist.items(), columns=['Term', 'Frequency'])
+
+# Sort the DataFrame by frequency
+sorted_freq_dist_df = freq_dist_df.sort_values(by='Frequency', ascending=False)
+
+
+stoptf = set(freq_dist_df[(freq_dist_df['Frequency'] < 10) | (freq_dist_df['Frequency'] > 3000)]['Term'])
+
+stop_words = list(stoptf)
+
+num_terms = 15
+topics_data = []
+
+for topic_id in range(ldamodel.num_topics):
+    terms = ldamodel.show_topic(topic_id, topn=num_terms)
+    topic_terms = [f"{term[0]} ({term[1]:.4f})" for term in terms]  # Format: "term (probability)"
+    topics_data.append(topic_terms)
+# Convert to DataFrame with column names "Term 1", "Term 2", ..., "Term 10"
+columns = [f"Term {i+1}" for i in range(num_terms)]
+df = pd.DataFrame(topics_data, columns=columns, index=[f"Topic {i}" for i in range(ldamodel.num_topics)])
+
+# Write the DataFrame to an Excel file
+df.to_excel("colalge_topics_terms_probabilities.xlsx", index=False)
+
+import numpy as np
+import gensim
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.preprocessing import normalize
+from nltk.tokenize import word_tokenize
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
+
+# Ensure you have these resources downloaded
+import nltk
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+
+# Load GloVe word embeddings
+def load_glove_embeddings(path):
+    embeddings = {}
+    with open(path, 'r', encoding='utf8') as f:
+        for line in f:
+            values = line.split()
+            word = values[0]
+            vector = np.asarray(values[1:], dtype='float32')
+            embeddings[word] = vector
+    return embeddings
+
+# Preprocess text data
+def preprocess_text(text):
+    # Tokenization
+    tokens = word_tokenize(text.lower())
+    # Remove stopwords
+    stop_words = stoptf
+    tokens = [t for t in tokens if t not in stop_words]
+    # Lemmatization
+    lemmatizer = WordNetLemmatizer()
+    tokens = [lemmatizer.lemmatize(t) for t in tokens]
+    return " ".join(tokens)
+
+
+# Load and preprocess your text data
+corpus = collage_df_gen['Tags'].dropna().astype(str)  # Your list of text documents
+preprocessed_corpus = [preprocess_text(doc) for doc in corpus]
+
+# Load GloVe word embeddings
+glove_path = 'glove.6B/glove.6B.300d.txt'  # Path to your GloVe file
+glove_embeddings = load_glove_embeddings(glove_path)
+
+# Build document embeddings
+def generate_doc_embeddings(corpus, embeddings):
+    vectorized_docs = []
+    embedding_dim = len(next(iter(embeddings.values())))  # Automatically determine the embedding dimension
+    for doc in corpus:
+        tokens = doc.split()
+        doc_vector = sum([embeddings.get(token, np.zeros((embedding_dim,))) for token in tokens]) / len(tokens)
+        vectorized_docs.append(doc_vector)
+    return vectorized_docs
+
+doc_embeddings = generate_doc_embeddings(preprocessed_corpus, glove_embeddings)
+
+from sklearn.preprocessing import MinMaxScaler
+
+# Apply Latent Dirichlet Allocation (LDA) for topic modeling
+num_topics = 5  # Number of topics to identify
+lda = LatentDirichletAllocation(n_components=num_topics)
+scaler = MinMaxScaler()
+doc_embeddings_scaled = scaler.fit_transform(doc_embeddings)
+lda.fit(doc_embeddings_scaled)
+
+
+vectorizer = CountVectorizer(vocabulary=glove_embeddings.keys(), tokenizer=lambda x: x.split())
+
+# Get the top words for each topic
+num_top_words = 10  # Number of top words to display
+feature_names = feature_names = vectorizer.get_feature_names_out()
+for topic_idx, topic in enumerate(lda.components_):
+    top_words_indices = topic.argsort()[:-num_top_words - 1:-1]
+    top_words = [feature_names[i] for i in top_words_indices]
+    print(f"Topic #{topic_idx + 1}:")
+    print(", ".join(top_words))
+    print()
+
+topics_terms = []
+
+for topic_idx, topic in enumerate(lda.components_):
+    top_words_indices = topic.argsort()[:-num_top_words - 1:-1]
+    top_terms = [f"{feature_names[i]} ({topic[i]:.3f})" for i in top_words_indices]
+    topics_terms.append(top_terms)
+
+df = pd.DataFrame(topics_terms, columns=[f"Term {i}" for i in range(1, num_top_words+1)])
+df.insert(0, "Topic", range(1, num_topics+1))
+print(df)
+
+
+
+
+
+from time import time
+
+import matplotlib.pyplot as plt
+
+from sklearn.datasets import fetch_20newsgroups
+from sklearn.decomposition import NMF, LatentDirichletAllocation, MiniBatchNMF
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+
+n_samples = 2000
+n_features = 1000
+n_components = 6
+n_top_words = 20
+batch_size = 128
+init = "nndsvda"
+
+
+def plot_top_words(model, feature_names, n_top_words, title):
+    fig, axes = plt.subplots(2, 5, figsize=(30, 15), sharex=True)
+    axes = axes.flatten()
+    for topic_idx, topic in enumerate(model.components_):
+        top_features_ind = topic.argsort()[: -n_top_words - 1 : -1]
+        top_features = [feature_names[i] for i in top_features_ind]
+        weights = topic[top_features_ind]
+
+        ax = axes[topic_idx]
+        ax.barh(top_features, weights, height=0.7)
+        ax.set_title(f"Topic {topic_idx +1}", fontdict={"fontsize": 30})
+        ax.invert_yaxis()
+        ax.tick_params(axis="both", which="major", labelsize=20)
+        for i in "top right left".split():
+            ax.spines[i].set_visible(False)
+        fig.suptitle(title, fontsize=40)
+
+    plt.subplots_adjust(top=0.90, bottom=0.05, wspace=0.90, hspace=0.3)
+    plt.show()
+
+
+# Load the 20 newsgroups dataset and vectorize it. We use a few heuristics
+# to filter out useless terms early on: the posts are stripped of headers,
+# footers and quoted replies, and common English words, words occurring in
+# only one document or in at least 95% of the documents are removed.
+
+print("Loading dataset...")
+t0 = time()
+data, _ = fetch_20newsgroups(
+    shuffle=True,
+    random_state=1,
+    remove=("headers", "footers", "quotes"),
+    return_X_y=True,
+)
+data_samples = data[:n_samples]
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf-idf features for NMF.
+print("Extracting tf-idf features for NMF...")
+tfidf_vectorizer = TfidfVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tfidf = tfidf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf (raw term count) features for LDA.
+print("Extracting tf features for LDA...")
+tf_vectorizer = CountVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tf = tf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+print()
+
+# Fit the NMF model
+print(
+    "Fitting the NMF model (Frobenius norm) with tf-idf features, "
+    "n_samples=%d and n_features=%d..." % (n_samples, n_features)
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=1,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf, tfidf_feature_names, n_top_words, "Topics in NMF model (Frobenius norm)"
+)
+
+# Fit the NMF model
+print(
+    "\n" * 2,
+    "Fitting the NMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="kullback-leibler",
+    solver="mu",
+    max_iter=1000,
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in NMF model (generalized Kullback-Leibler divergence)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (Frobenius norm) with tf-idf "
+    "features, n_samples=%d and n_features=%d, batch_size=%d..."
+    % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (Frobenius norm)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d, "
+    "batch_size=%d..." % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="kullback-leibler",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (generalized Kullback-Leibler divergence)",
+)
+
+print(
+    "\n" * 2,
+    "Fitting LDA models with tf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+lda = LatentDirichletAllocation(
+    n_components=n_components,
+    max_iter=5,
+    learning_method="online",
+    learning_offset=50.0,
+    random_state=0,
+)
+t0 = time()
+lda.fit(tf)
+print("done in %0.3fs." % (time() - t0))
+
+tf_feature_names = tf_vectorizer.get_feature_names_out()
+plot_top_words(lda, tf_feature_names, n_top_words, "Topics in LDA model")
+
+Run with UK Data Collage
+
+#run with Norway data
+corpus1 = collage_df_uk_gen['Tags'].dropna().astype(str)
+
+
+freq_dist = FreqDist()
+for keyword in corpus1:
+    words = keyword.split()
+    freq_dist.update(words)
+
+
+freq_dist_df = pd.DataFrame(freq_dist.items(), columns=['Term', 'Frequency'])
+
+# Sort the DataFrame by frequency
+sorted_freq_dist_df = freq_dist_df.sort_values(by='Frequency', ascending=False)
+
+sorted_freq_dist_df
+
+stoptf = set(freq_dist_df[(freq_dist_df['Frequency'] < 10) | (freq_dist_df['Frequency'] > 200)]['Term'])
+
+stop_words = list(stoptf)
+
+lemmatized_texts = lemmatization(corpus1,custom_stopwords=stop_words)
+data_words = gen_words(lemmatized_texts)
+id2word = corpora.Dictionary(data_words)
+corpus = []
+for text in data_words:
+    new = id2word.doc2bow(text)
+    corpus.append(new)
+
+coherence_collage_gen_u = []
+for k in range(3,6):
+    print('Round: '+str(k))
+    Lda = gensim.models.ldamodel.LdaModel
+    ldamodel = Lda(corpus, num_topics=k, id2word = id2word, passes=40,\
+                   iterations=200, chunksize = 1000, eval_every = None)
+
+    cm = gensim.models.coherencemodel.CoherenceModel(model=ldamodel, texts=data_words,\
+                                                     dictionary=id2word, coherence='c_v')
+    coherence_collage_gen_u.append((k,cm.get_coherence()))
+
+
+x_val = [x[0] for x in coherence_collage_gen_u]
+y_val = [x[1] for x in coherence_collage_gen_u]
+plt.plot(x_val,y_val)
+plt.scatter(x_val,y_val)
+plt.title('Number of Topics vs. Coherence')
+plt.xlabel('Number of Topics')
+plt.ylabel('Coherence')
+plt.xticks(x_val)
+plt.show()
+
+#run with Norway data - DECIDE 12 Topics Collage
+
+Lda = gensim.models.ldamodel.LdaModel
+ldamodel = Lda(corpus, num_topics=4, id2word = id2word, passes=40,\
+               iterations=200,  chunksize = 1000, eval_every = None, random_state=0)
+
+topic_data =  pyLDAvis.gensim.prepare(ldamodel, corpus, id2word, mds = 'pcoa')
+pyLDAvis.display(topic_data)
+
+num_terms = 15
+topics_data = []
+
+for topic_id in range(ldamodel.num_topics):
+    terms = ldamodel.show_topic(topic_id, topn=num_terms)
+    topic_terms = [f"{term[0]} ({term[1]:.4f})" for term in terms]  # Format: "term (probability)"
+    topics_data.append(topic_terms)
+# Convert to DataFrame with column names "Term 1", "Term 2", ..., "Term 10"
+columns = [f"Term {i+1}" for i in range(num_terms)]
+df = pd.DataFrame(topics_data, columns=columns, index=[f"Topic {i}" for i in range(ldamodel.num_topics)])
+
+# Write the DataFrame to an Excel file
+df.to_excel("colalge_topics_terms_probabilities_uk.xlsx", index=False)
+
+from time import time
+
+import matplotlib.pyplot as plt
+
+from sklearn.datasets import fetch_20newsgroups
+from sklearn.decomposition import NMF, LatentDirichletAllocation, MiniBatchNMF
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+
+n_samples = 2000
+n_features = 1000
+n_components = 4
+n_top_words = 20
+batch_size = 128
+init = "nndsvda"
+
+
+def plot_top_words(model, feature_names, n_top_words, title):
+    fig, axes = plt.subplots(2, 5, figsize=(30, 15), sharex=True)
+    axes = axes.flatten()
+    for topic_idx, topic in enumerate(model.components_):
+        top_features_ind = topic.argsort()[: -n_top_words - 1 : -1]
+        top_features = [feature_names[i] for i in top_features_ind]
+        weights = topic[top_features_ind]
+
+        ax = axes[topic_idx]
+        ax.barh(top_features, weights, height=0.7)
+        ax.set_title(f"Topic {topic_idx +1}", fontdict={"fontsize": 30})
+        ax.invert_yaxis()
+        ax.tick_params(axis="both", which="major", labelsize=20)
+        for i in "top right left".split():
+            ax.spines[i].set_visible(False)
+        fig.suptitle(title, fontsize=40)
+
+    plt.subplots_adjust(top=0.90, bottom=0.05, wspace=0.90, hspace=0.3)
+    plt.show()
+
+
+# Load the 20 newsgroups dataset and vectorize it. We use a few heuristics
+# to filter out useless terms early on: the posts are stripped of headers,
+# footers and quoted replies, and common English words, words occurring in
+# only one document or in at least 95% of the documents are removed.
+
+print("Loading dataset...")
+t0 = time()
+data, _ = fetch_20newsgroups(
+    shuffle=True,
+    random_state=1,
+    remove=("headers", "footers", "quotes"),
+    return_X_y=True,
+)
+data_samples = data[:n_samples]
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf-idf features for NMF.
+print("Extracting tf-idf features for NMF...")
+tfidf_vectorizer = TfidfVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tfidf = tfidf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+
+# Use tf (raw term count) features for LDA.
+print("Extracting tf features for LDA...")
+tf_vectorizer = CountVectorizer(
+    max_df=0.95, min_df=2, max_features=n_features, stop_words=stop_words
+)
+t0 = time()
+tf = tf_vectorizer.fit_transform(lemmatized_texts)
+print("done in %0.3fs." % (time() - t0))
+print()
+
+# Fit the NMF model
+print(
+    "Fitting the NMF model (Frobenius norm) with tf-idf features, "
+    "n_samples=%d and n_features=%d..." % (n_samples, n_features)
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=1,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf, tfidf_feature_names, n_top_words, "Topics in NMF model (Frobenius norm)"
+)
+
+# Fit the NMF model
+print(
+    "\n" * 2,
+    "Fitting the NMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+t0 = time()
+nmf = NMF(
+    n_components=n_components,
+    random_state=1,
+    init=init,
+    beta_loss="kullback-leibler",
+    solver="mu",
+    max_iter=1000,
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    nmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in NMF model (generalized Kullback-Leibler divergence)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (Frobenius norm) with tf-idf "
+    "features, n_samples=%d and n_features=%d, batch_size=%d..."
+    % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="frobenius",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (Frobenius norm)",
+)
+
+# Fit the MiniBatchNMF model
+print(
+    "\n" * 2,
+    "Fitting the MiniBatchNMF model (generalized Kullback-Leibler "
+    "divergence) with tf-idf features, n_samples=%d and n_features=%d, "
+    "batch_size=%d..." % (n_samples, n_features, batch_size),
+)
+t0 = time()
+mbnmf = MiniBatchNMF(
+    n_components=n_components,
+    random_state=1,
+    batch_size=batch_size,
+    init=init,
+    beta_loss="kullback-leibler",
+    alpha_W=0.00005,
+    alpha_H=0.00005,
+    l1_ratio=0.5,
+).fit(tfidf)
+print("done in %0.3fs." % (time() - t0))
+
+tfidf_feature_names = tfidf_vectorizer.get_feature_names_out()
+plot_top_words(
+    mbnmf,
+    tfidf_feature_names,
+    n_top_words,
+    "Topics in MiniBatchNMF model (generalized Kullback-Leibler divergence)",
+)
+
+print(
+    "\n" * 2,
+    "Fitting LDA models with tf features, n_samples=%d and n_features=%d..."
+    % (n_samples, n_features),
+)
+lda = LatentDirichletAllocation(
+    n_components=n_components,
+    max_iter=5,
+    learning_method="online",
+    learning_offset=50.0,
+    random_state=0,
+)
+t0 = time()
+lda.fit(tf)
+print("done in %0.3fs." % (time() - t0))
+
+tf_feature_names = tf_vectorizer.get_feature_names_out()
+plot_top_words(lda, tf_feature_names, n_top_words, "Topics in LDA model")
+
+#2. Run NMF with model trained.
+
+[link text](https://)Need to run for a long time, decide later - Have some results with VIS FINAL notebook.
+
+# 3. Run with OpenAI text Embedding
+
+pip install tiktoken
+
+# imports
+import pandas as pd
+import tiktoken
+
+from openai.embeddings_utils import get_embedding
+
+# embedding model parameters
+embedding_model = "text-embedding-ada-002"
+embedding_encoding = "cl100k_base"  # this the encoding for text-embedding-ada-002
+max_tokens = 8000  # the maximum for text-embedding-ada-002 is 8191
+
+collage_df_gen['Description_Eng']
+
+#test with text embeddings
+df = collage_df_gen[["Panelist Survey Id","Collage URL", "Tags", "Keyword", "Description","Description_Eng"]]
+df.replace('NaN', np.nan, inplace=True)
+df = df.dropna(how='any')
+
+# we can combine Tags, Keywords, and Descriptions in English. But we will test with tags firstly.
+
+df["combined"] = (
+    "Tags: " + df.Tags.str.strip()+ " Description: " + df.Description_Eng.str.strip()
+)
+df.head(2)
+
+#df["combined"] = (
+#    "Tags: " + df.AKeywords.str.strip() + "; PKeywords: " + df.PKeywords.str.strip()
+#    + "Title: " + df.Title.str.strip() + "; Abstract: " + df.Abstract.str.strip()
+#)
+#df.head(2)
+
+df["Tags"] = [str(tags).replace(';', ' ') for tags in df["Tags"]]
+
+import tiktoken
+
+def num_tokens_from_string(string: str, encoding_name: str) -> int:
+    """Returns the number of tokens in a text string."""
+    encoding = tiktoken.get_encoding(encoding_name)
+    num_tokens = len(encoding.encode(string))
+    return num_tokens
+
+total_tokens = 0
+for abstract in df["Tags"]:
+    total_tokens += num_tokens_from_string(abstract, "cl100k_base")
+
+print(total_tokens)
+
+	0.0001 * total_tokens/1000
+
+top_n = 1000
+encoding = tiktoken.get_encoding(embedding_encoding)
+df["n_tokens"] = df.combined.apply(lambda x: len(encoding.encode(x)))
+df = df[df.n_tokens <= max_tokens].tail(top_n)
+len(df)
+
+df["embedding"] = df.combined.apply(lambda x: get_embedding(x, engine=embedding_model))
+df.to_csv("embedded_tags.csv")
+
+# load & inspect dataset (AVOID RE-EMBEDDING)
+input_datapath = "embedded_tags.csv"  # to save space, we provide a pre-filtered dataset
+
+df = pd.read_csv('embedded_tags.csv' )
+
+pip install pandas
+
+df['embedding']
+
+df['embedding'] = df.embedding.apply(eval).apply(np.array)
+
+from sklearn.manifold import TSNE
+import numpy as np
+from ast import literal_eval
+import re
+
+def custom_parser(s):
+    # If it's already a numpy array, just return it
+    if isinstance(s, np.ndarray):
+        return s
+
+    try:
+        # Try to parse as a regular list string
+        return literal_eval(s)
+    except ValueError:
+        # Handle numpy array format
+        if s.startswith("array("):
+            # Extract numbers from the numpy array string representation
+            numbers = re.findall(r"[-+]?\d*\.\d+|\d+", s)
+            return [float(num) for num in numbers]
+        else:
+            raise
+
+# Convert the embeddings using the custom parser
+df['embedding'] = df['embedding'].apply(custom_parser)
+
+# Convert to a list of lists of floats
+matrix = np.array(df.embedding.to_list())
+
+
+# Create a t-SNE model and transform the data
+tsne = TSNE(n_components=2, perplexity=15, random_state=42, init='random', learning_rate=200)
+vis_dims = tsne.fit_transform(matrix)
+vis_dims.shape
+
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
+
+wcss = [] # within-cluster sum of squares
+for i in range(1, 21):
+    kmeans = KMeans(n_clusters=i, init='k-means++', random_state=42)
+    kmeans.fit(matrix)
+    wcss.append(kmeans.inertia_)
+
+plt.figure(figsize=(10,5))
+plt.plot(range(1, 21), wcss, marker='o', linestyle='--')
+plt.title('Elbow Method')
+plt.xlabel('Number of clusters')
+plt.ylabel('WCSS')
+plt.show()
+
+import numpy as np
+from sklearn.cluster import KMeans
+
+matrix = np.vstack(df.embedding.values)
+n_clusters = 5
+
+kmeans = KMeans(n_clusters = n_clusters, init='k-means++', random_state=42)
+kmeans.fit(matrix)
+df['Cluster'] = kmeans.labels_
+
+df.groupby("Cluster").size()
+
+# Extend the color list for more clusters
+colors = ["purple", "green", "red", "blue", "orange", "cyan", "magenta", "yellow", "black", "gray"]  # ... add as many colors as needed
+
+x = [x for x, y in vis_dims]
+y = [y for x, y in vis_dims]
+
+num_clusters = df['Cluster'].nunique()  # Gets the number of unique clusters
+
+# Adjust this loop for the number of clusters
+for category in range(num_clusters):
+    xs = np.array(x)[df.Cluster == category]
+    ys = np.array(y)[df.Cluster == category]
+    plt.scatter(xs, ys, color=colors[category], alpha=0.3)
+
+    avg_x = xs.mean()
+    avg_y = ys.mean()
+    plt.scatter(avg_x, avg_y, marker="x", color=colors[category], s=100)
+
+plt.title("Clusters identified visualized in 2D using t-SNE")
+
+# Extend the color list for more clusters
+colors = ["purple", "green", "red", "blue", "orange", "cyan", "magenta", "yellow", "black", "gray"]  # ... add as many colors as needed
+
+x = [x for x, y in vis_dims]
+y = [y for x, y in vis_dims]
+
+num_clusters = df['Cluster'].nunique()  # Gets the number of unique clusters
+
+# Adjust this loop for the number of clusters
+for category in range(num_clusters):
+    xs = np.array(x)[df.Cluster == category]
+    ys = np.array(y)[df.Cluster == category]
+    plt.scatter(xs, ys, color=colors[category], alpha=0.3, label=f"Cluster {category+1}")  # Add label for each cluster
+
+    avg_x = xs.mean()
+    avg_y = ys.mean()
+    plt.scatter(avg_x, avg_y, marker="x", color=colors[category], s=100)
+
+plt.title("Clusters identified visualized in 2D using t-SNE")
+plt.legend(loc='best')  # Display the legend
+plt.show()
+
+
+df['combined']
+
+df.rename(columns={
+    'Panelist Survey Id': 'Panelist_Survey_Id',
+    'Collage URL': 'Collage_URL'
+}, inplace=True)
+
+import pandas as pd
+
+rev_per_cluster = 5
+Theme_generated = []  # To store rows of data
+
+for i in range(n_clusters):
+    cluster_theme = f"Cluster {i} Theme:"
+
+    summary = "\n".join(
+        df[df.Cluster == i]
+        .combined.str.replace("Tags: ", "")
+        .sample(rev_per_cluster, random_state=42)
+        .values
+    )
+
+    response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=f'Given a list of tags related to eating experiences, please summarize the main themes within these tags. Additionally, identify and highlight the most prominent sensory element (e.g., taste, smell, sight, touch, sound) inferred from the tags. Conclude with a rationale for your chosen sensory element based on the tags provided.\n"""\n{summary}\n"""\n\nTheme:',
+        temperature=0,
+        max_tokens=64,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
+    )
+
+    theme_text = response["choices"][0]["text"].replace("\n", "")
+
+    sample_cluster_rows = df[df.Cluster == i].sample(rev_per_cluster, random_state=42)
+    for j in range(rev_per_cluster):
+        panelist_survey_id = sample_cluster_rows.Panelist_Survey_Id.values[j]
+        collage_url = sample_cluster_rows.Collage_URL.values[j]
+        description = sample_cluster_rows.Description_Eng.str[:70].values[j]
+
+        # Append data to list
+        Theme_generated.append([cluster_theme, theme_text, panelist_survey_id, collage_url, description])
+
+# Convert list to DataFrame
+df_output = pd.DataFrame(Theme_generated, columns=["Cluster Theme", "Theme Text", "Panelist Survey ID", "Collage URL", "Description"])
+
+# Save to CSV
+df_output.to_csv("Norway_Theme_generated_Newprompt.csv", index=False)
+
+
+df_output
+
+import pandas as pd
+
+rev_per_cluster = 5
+Theme_generated = []  # To store rows of data
+
+for i in range(n_clusters):
+    cluster_theme = f"Cluster {i} Theme:"
+
+    summary = "\n".join(
+        df[df.Cluster == i]
+        .combined.str.replace("Tags: ", "")
+        .sample(rev_per_cluster, random_state=42)
+        .values
+    )
+
+    response = openai.Completion.create(
+        engine="text-davinci-003",
+        prompt=f'These are series of tags of photos picked by people to describe their dining experience in Norway.Please base on these tags to summarize from perspectives of five senses of dining experience in Norway? \n\Tags:\n"""\n{summary}\n"""\n\nTheme:',
+        temperature=0,
+        max_tokens=64,
+        top_p=1,
+        frequency_penalty=0,
+        presence_penalty=0,
+    )
+
+    theme_text = response["choices"][0]["text"].replace("\n", "")
+
+    sample_cluster_rows = df[df.Cluster == i].sample(rev_per_cluster, random_state=42)
+    for j in range(rev_per_cluster):
+        panelist_survey_id = sample_cluster_rows.Panelist_Survey_Id.values[j]
+        collage_url = sample_cluster_rows.Collage_URL.values[j]
+        description = sample_cluster_rows.Description_Eng.str[:70].values[j]
+
+        # Append data to list
+        Theme_generated.append([cluster_theme, theme_text, panelist_survey_id, collage_url, description])
+
+# Convert list to DataFrame
+df_output = pd.DataFrame(Theme_generated, columns=["Cluster Theme", "Theme Text", "Panelist Survey ID", "Collage URL", "Description"])
+
+# Save to CSV
+df_output.to_csv("Norway_Theme_generated2.csv", index=False)
+
+
+df_output
+
+# [SUMMARY THEMES TABLE](https://docs.google.com/spreadsheets/d/1Zl0XShd3bBY7hh9pTKs48W_qnSrI3xovGee0rNALVUk/edit#gid=1437409370)
